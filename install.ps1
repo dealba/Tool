@@ -1,7 +1,7 @@
 <# 
  H4N53N Tool - Console edition (winget + tweaks)
  - Works in PowerShell 5.1 and 7.x
- - No WPF, no Unicode punctuation (safe encoding)
+ - ASCII only (safe encoding)
  - Uses profiles\apps-*.json and tweaks.ps1 in same folder
 #>
 
@@ -64,10 +64,10 @@ foreach ($p in $profiles) {
         })
       }
     } catch {
-      Write-Log "Failed to parse $path : $($_.Exception.Message)" "ERROR"
+      Write-Log ("Failed to parse {0} : {1}" -f $path, $_.Exception.Message) "ERROR"
     }
   } else {
-    Write-Log "Profile file missing: $path" "WARN"
+    Write-Log ("Profile file missing: {0}" -f $path) "WARN"
   }
 }
 
@@ -155,56 +155,56 @@ if ($chosenTweaks.Count -gt 0) {
   }
 }
 
-# ---------- Install apps ----------
+# ---------- Winget installer (handles already-installed and no-upgrade as OK) ----------
 function Invoke-WingetInstall {
   param([string]$Id)
 
-  # 1) Tjek om app allerede er installeret
+  # 1) Is it already installed?
   $listArgs = @('list','--exact','--id',$Id)
-  try {
-    $list = (& winget @listArgs) -join "`n"
-  } catch {
-    $list = ""
-  }
+  $listOut = ""
+  try { $listOut = (& winget @listArgs) 2>&1 | Out-String } catch {}
 
-  if ($list -match 'No installed package found matching input criteria') {
-    # Ikke installeret → kør install
+  if ($listOut -match 'No installed package found matching input criteria') {
+    # Not installed -> INSTALL
     $args = @('install','--exact','--id',$Id,'--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
     if ($Silent) { $args += '--silent' }
     Write-Log ("CMD: winget " + ($args -join ' '))
     if ($DryRun) { return 0 }
-    $p = Start-Process -FilePath 'winget' -ArgumentList $args -NoNewWindow -Wait -PassThru
-    return [int]$p.ExitCode
+    try {
+      $out = (& winget @args) 2>&1 | Out-String
+      Write-Log ("OUT: " + ($out.Trim() -replace '\s{2,}',' '))
+      # If winget says already installed mid-install, treat as success:
+      if ($out -match 'Found an existing package already installed') { return 0 }
+      return [int]$LASTEXITCODE
+    } catch {
+      Write-Log ("winget install failed for {0}: {1}" -f $Id, $_.Exception.Message) "ERROR"
+      return 1
+    }
   } else {
-    # Allerede installeret → forsøg upgrade (eller skip)
-    Write-Log ("Already installed: {0} → trying upgrade" -f $Id)
-
+    # Already installed -> UPGRADE
+    Write-Log ("Already installed: {0} -> trying upgrade" -f $Id)
     $upArgs = @('upgrade','--exact','--id',$Id,'--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
     if ($Silent) { $upArgs += '--silent' }
     Write-Log ("CMD: winget " + ($upArgs -join ' '))
     if ($DryRun) { return 0 }
-    $p = Start-Process -FilePath 'winget' -ArgumentList $upArgs -NoNewWindow -Wait -PassThru
-    $code = [int]$p.ExitCode
-
-    # Nogle gange returnerer winget en non-zero selvom der ikke var en opdatering.
-    # Behandl “no applicable upgrade” som OK:
-    if ($code -ne 0) {
-      # Tjek tekst for "No applicable update found" i upgrade-output ved at køre igen med capture
-      try {
-        $out = & winget @($upArgs + '--verbose-logs') 2>&1 | Out-String
-        if ($out -match 'No applicable update found' -or $out -match 'No upgrade available') {
-          Write-Log ("No upgrade available for {0}. Treating as OK." -f $Id)
-          return 0
-        }
-      } catch {}
+    try {
+      $upOut = (& winget @upArgs) 2>&1 | Out-String
+      Write-Log ("OUT: " + ($upOut.Trim() -replace '\s{2,}',' '))
+      if ($upOut -match 'No available upgrade found' -or $upOut -match 'No applicable update found' -or $upOut -match 'No upgrade available') {
+        Write-Log ("No upgrade available for {0}. Treating as OK." -f $Id)
+        return 0
+      }
+      return [int]$LASTEXITCODE
+    } catch {
+      Write-Log ("winget upgrade failed for {0}: {1}" -f $Id, $_.Exception.Message) "ERROR"
+      return 1
     }
-
-    return $code
   }
 }
 
+# ---------- Install apps ----------
 Write-Host ""
-Write-Log ("Installing {0} app(s)..." -f $chosenApps.Count)
+Write-Log ("Installing {0} app(s)..." -f ($chosenApps.Count))
 foreach ($app in $chosenApps) {
   if ($app.Source -ne 'winget') {
     Write-Log ("Unknown source '{0}' for {1} - skipping." -f $app.Source, $app.Name) "WARN"
@@ -213,7 +213,7 @@ foreach ($app in $chosenApps) {
   Write-Log ("Installing: {0} ({1})" -f $app.Name, $app.Id)
   $code = Invoke-WingetInstall -Id $app.Id
   if ($code -eq 0) {
-    Write-Log ("OK: {0} installed." -f $app.Name)
+    Write-Log ("OK: {0} installed/up-to-date." -f $app.Name)
   } else {
     Write-Log ("ERROR: {0} failed with code {1}." -f $app.Name, $code) "ERROR"
   }
