@@ -1,0 +1,7 @@
+[
+  { "name": "7-Zip",              "id": "7zip.7zip" },
+  { "name": "Google Chrome",      "id": "Google.Chrome" },
+  { "name": "PowerToys",          "id": "Microsoft.PowerToys" },
+  { "name": "VLC",                "id": "VideoLAN.VLC" },
+  { "name": "Git",                "id": "Git.Git" }
+]

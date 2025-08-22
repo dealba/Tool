@@ -1,0 +1,6 @@
+[
+  { "name": "Steam",              "id": "Valve.Steam" },
+  { "name": "Discord",            "id": "Discord.Discord" },
+  { "name": "GPU-Z",              "id": "TechPowerUp.GPU-Z" },
+  { "name": "MSI Afterburner",    "id": "Guru3D.MSIAfterburner" }
+]

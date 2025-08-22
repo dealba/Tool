@@ -1,0 +1,7 @@
+[
+  { "name": "Visual Studio Code", "id": "Microsoft.VisualStudioCode" },
+  { "name": "Windows Terminal",   "id": "Microsoft.WindowsTerminal" },
+  { "name": "Node.js LTS",        "id": "OpenJS.NodeJS.LTS" },
+  { "name": "Python 3",           "id": "Python.Python.3.12" },
+  { "name": "Docker Desktop",     "id": "Docker.DockerDesktop" }
+]
