@@ -158,25 +158,48 @@ if ($chosenTweaks.Count -gt 0) {
 # ---------- Install apps ----------
 function Invoke-WingetInstall {
   param([string]$Id)
-  $args = @(
-    'install','--exact','--id', $Id,
-    '--accept-package-agreements','--accept-source-agreements'
-  )
-  if ($Silent) { $args += '--silent' }
-  # valgfrit: undgå popups
-  $args += '--disable-interactivity'
 
-  $argLine = ($args -join ' ')
-  Write-Log ("CMD: winget " + $argLine)
-
-  if ($DryRun) { return 0 }
-
+  # 1) Tjek om app allerede er installeret
+  $listArgs = @('list','--exact','--id',$Id)
   try {
+    $list = (& winget @listArgs) -join "`n"
+  } catch {
+    $list = ""
+  }
+
+  if ($list -match 'No installed package found matching input criteria') {
+    # Ikke installeret → kør install
+    $args = @('install','--exact','--id',$Id,'--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
+    if ($Silent) { $args += '--silent' }
+    Write-Log ("CMD: winget " + ($args -join ' '))
+    if ($DryRun) { return 0 }
     $p = Start-Process -FilePath 'winget' -ArgumentList $args -NoNewWindow -Wait -PassThru
     return [int]$p.ExitCode
-  } catch {
-    Write-Log ("winget failed for {0}: {1}" -f $Id, $_.Exception.Message) "ERROR"
-    return 1
+  } else {
+    # Allerede installeret → forsøg upgrade (eller skip)
+    Write-Log ("Already installed: {0} → trying upgrade" -f $Id)
+
+    $upArgs = @('upgrade','--exact','--id',$Id,'--accept-package-agreements','--accept-source-agreements','--disable-interactivity')
+    if ($Silent) { $upArgs += '--silent' }
+    Write-Log ("CMD: winget " + ($upArgs -join ' '))
+    if ($DryRun) { return 0 }
+    $p = Start-Process -FilePath 'winget' -ArgumentList $upArgs -NoNewWindow -Wait -PassThru
+    $code = [int]$p.ExitCode
+
+    # Nogle gange returnerer winget en non-zero selvom der ikke var en opdatering.
+    # Behandl “no applicable upgrade” som OK:
+    if ($code -ne 0) {
+      # Tjek tekst for "No applicable update found" i upgrade-output ved at køre igen med capture
+      try {
+        $out = & winget @($upArgs + '--verbose-logs') 2>&1 | Out-String
+        if ($out -match 'No applicable update found' -or $out -match 'No upgrade available') {
+          Write-Log ("No upgrade available for {0}. Treating as OK." -f $Id)
+          return 0
+        }
+      } catch {}
+    }
+
+    return $code
   }
 }
 
