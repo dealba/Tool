@@ -34,7 +34,7 @@ function Ensure-Admin {
     if ($DryRun) { $args += '-DryRun' }
     if ($Silent) { $args += '-Silent' }
     if ($BaseUrl) { $args += @('-BaseUrl',"`"$BaseUrl`"") }
-    $psi.ArgumentList.AddRange($args)
+    foreach ($a in $args) { $null = $psi.ArgumentList.Add($a) }
     $psi.Verb = "runas"
     [Diagnostics.Process]::Start($psi) | Out-Null
     exit
@@ -67,16 +67,8 @@ function Get-ProfileJson {
 function Invoke-Tweaks {
   param([string[]]$SelectedTweaks)
   if (-not $SelectedTweaks -or $SelectedTweaks.Count -eq 0) { return }
-  if ($BaseUrl -and -not (Test-Path (Join-Path $ScriptRoot 'tweaks.ps1'))) {
-    $url = ($BaseUrl.TrimEnd('/')) + "/tweaks.ps1"
-    $tmp = Join-Path $env:TEMP "h4n53n_tweaks.ps1"
-    Write-Log "Henter tweaks.ps1: $url"
-    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tmp
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -Tweaks $SelectedTweaks -DryRun:$DryRun
-  } else {
-    $tw = Join-Path $ScriptRoot 'tweaks.ps1'
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $tw -Tweaks $SelectedTweaks -DryRun:$DryRun
-  }
+  $tw = Join-Path $ScriptRoot 'tweaks.ps1'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $tw -Tweaks $SelectedTweaks -DryRun:$DryRun
 }
 
 function Install-Winget {
@@ -85,7 +77,7 @@ function Install-Winget {
   if ($SilentInstall) { $args += "--silent" }
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = "winget"
-  $psi.ArgumentList.AddRange($args)
+  foreach ($a in $args) { $null = $psi.ArgumentList.Add($a) }
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError  = $true
   $psi.UseShellExecute        = $false
@@ -96,14 +88,6 @@ function Install-Winget {
   if ($stdout) { Write-Log $stdout.Trim() "OUT" }
   if ($stderr) { Write-Log $stderr.Trim() "ERR" }
   return $proc.ExitCode
-}
-
-$UseWpf = $true
-try {
-  Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase | Out-Null
-} catch {
-  $UseWpf = $false
-  Write-Log "WPF ikke tilgængelig. Fald tilbage til Out-GridView." "WARN"
 }
 
 $profiles = @('essentials','dev','gaming')
@@ -132,6 +116,10 @@ $allTweaks = @(
   @{ Key='DisableTelemetryBasic'; Label='Reducer basal telemetri' }
 )
 
+# Hvis WPF kan loades (PowerShell 5.1), så kør GUI, ellers Out-GridView fallback
+$UseWpf = $true
+try { Add-Type -AssemblyName PresentationFramework } catch { $UseWpf = $false }
+
 if ($UseWpf) {
   $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -144,10 +132,8 @@ if ($UseWpf) {
     </Grid.RowDefinitions>
     <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
       <TextBlock Text="$($Script:ToolName)" FontSize="20" FontWeight="Bold" Margin="0,0,12,0"/>
-      <TextBlock Text="— vælg apps og tweaks" VerticalAlignment="Center"/>
       <CheckBox x:Name="chkDryRun" Content="Dry-Run" Margin="20,0,0,0"/>
       <CheckBox x:Name="chkSilent" Content="Silent install" Margin="12,0,0,0" IsChecked="True"/>
-      <TextBox x:Name="txtSearch" Width="220" Margin="20,0,0,0" ToolTip="Søg i apps"/>
     </StackPanel>
     <Grid Grid.Row="1">
       <Grid.ColumnDefinitions>
@@ -155,26 +141,21 @@ if ($UseWpf) {
         <ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
       <GroupBox Header="Apps">
-        <DockPanel>
-          <ListView x:Name="lvApps" SelectionMode="Extended">
-            <ListView.View>
-              <GridView>
-                <GridViewColumn Header="Navn" DisplayMemberBinding="{Binding Name}" Width="230"/>
-                <GridViewColumn Header="Id"   DisplayMemberBinding="{Binding Id}"   Width="240"/>
-                <GridViewColumn Header="Profil" DisplayMemberBinding="{Binding Profile}" Width="90"/>
-              </GridView>
-            </ListView.View>
-          </ListView>
-        </DockPanel>
+        <ListView x:Name="lvApps" SelectionMode="Extended">
+          <ListView.View>
+            <GridView>
+              <GridViewColumn Header="Navn" DisplayMemberBinding="{Binding Name}" Width="230"/>
+              <GridViewColumn Header="Id"   DisplayMemberBinding="{Binding Id}"   Width="240"/>
+              <GridViewColumn Header="Profil" DisplayMemberBinding="{Binding Profile}" Width="90"/>
+            </GridView>
+          </ListView.View>
+        </ListView>
       </GroupBox>
       <GroupBox Grid.Column="1" Header="Tweaks" Margin="10,0,0,0">
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-          <StackPanel x:Name="spTweaks" Margin="6"/>
-        </ScrollViewer>
+        <StackPanel x:Name="spTweaks"/>
       </GroupBox>
     </Grid>
     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
-      <TextBlock x:Name="lblStatus" VerticalAlignment="Center" Margin="0,0,10,0"/>
       <Button x:Name="btnInstall" Content="Installér valgte" Width="140" Height="30" Margin="0,0,6,0"/>
       <Button x:Name="btnClose" Content="Luk" Width="90" Height="30"/>
     </StackPanel>
@@ -182,105 +163,66 @@ if ($UseWpf) {
 </Window>
 "@
 
-  $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
+  $reader = (New-Object System.Xml.XmlNodeReader ([xml]$xaml))
   $win = [Windows.Markup.XamlReader]::Load($reader)
 
   $lvApps   = $win.FindName('lvApps')
   $spTweaks = $win.FindName('spTweaks')
   $chkDry   = $win.FindName('chkDryRun')
   $chkSil   = $win.FindName('chkSilent')
-  $txtSearch= $win.FindName('txtSearch')
-  $lblStat  = $win.FindName('lblStatus')
   $btnInst  = $win.FindName('btnInstall')
   $btnClose = $win.FindName('btnClose')
 
-  # Data binding
   $collection = New-Object System.Collections.ObjectModel.ObservableCollection[object]
   $allApps | ForEach-Object { $collection.Add($_) }
   $lvApps.ItemsSource = $collection
 
-  # Tweaks checkboxes
   $tweakBoxes = @{}
   foreach ($t in $allTweaks) {
     $cb = New-Object System.Windows.Controls.CheckBox
     $cb.Content = $t.Label
     $cb.Tag     = $t.Key
-    $cb.Margin  = '4'
     $spTweaks.Children.Add($cb) | Out-Null
     $tweakBoxes[$t.Key] = $cb
   }
 
-  function Update-Filter {
-    $q = $txtSearch.Text.Trim()
-    $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($lvApps.ItemsSource)
-    if ([string]::IsNullOrWhiteSpace($q)) {
-      $view.Filter = $null
-    } else {
-      $view.Filter = { param($item) ($item.Name -like "*$q*") -or ($item.Id -like "*$q*") -or ($item.Profile -like "*$q*") }
-    }
-    $view.Refresh()
-  }
-
-  $null = $txtSearch.Add_TextChanged({ Update-Filter })
-
-  function On-Install {
+  $btnInst.Add_Click({
     $sel = @($lvApps.SelectedItems)
-    $selectedTweaks = @()
-    foreach ($kv in $tweakBoxes.GetEnumerator()) {
-      if ($kv.Value.IsChecked) { $selectedTweaks += $kv.Key }
-    }
+    $selectedTweaks = $tweakBoxes.Keys | Where-Object { $tweakBoxes[$_].IsChecked }
+
     if ($sel.Count -eq 0 -and $selectedTweaks.Count -eq 0) {
       [System.Windows.MessageBox]::Show("Vælg mindst én app eller tweak.","$($Script:ToolName)")
       return
     }
-    $lblStat.Text = "Arbejder... se log: $Script:LogFile"
-    $btnInstall = $btnInst; $btnInstall.IsEnabled = $false
-    $isDry = $chkDry.IsChecked
-    $isSilent = $chkSil.IsChecked
 
-    if ($selectedTweaks.Count -gt 0) {
+    if ($selectedTweaks) {
       Write-Log "Tweaks valgt: $($selectedTweaks -join ', ')"
       Invoke-Tweaks -SelectedTweaks $selectedTweaks
     }
 
     foreach ($app in $sel) {
-      if ($app.Source -ne 'winget') {
-        Write-Log "Ukendt source '$($app.Source)' for $($app.Name) – springer over." "WARN"
-        continue
-      }
-      if ($isDry) {
+      if ($DryRun -or $chkDry.IsChecked) {
         Write-Log "[DRY-RUN] winget install --id $($app.Id)"
-        continue
-      }
-      Write-Log "Installerer: $($app.Name) ($($app.Id))..."
-      $code = Install-Winget -Id $app.Id -SilentInstall:$isSilent
-      if ($code -eq 0) {
-        Write-Log "OK: $($app.Name) installeret."
       } else {
-        Write-Log "FEJL ($code): $($app.Name) kunne ikke installeres." "ERROR"
+        Write-Log "Installerer: $($app.Name) ($($app.Id))..."
+        $code = Install-Winget -Id $app.Id -SilentInstall:($chkSil.IsChecked)
+        if ($code -eq 0) { Write-Log "OK: $($app.Name) installeret." } else { Write-Log "FEJL ($app.Name)" "ERROR" }
       }
     }
+  })
 
-    $lblStat.Text = "Færdig. Log: $Script:LogFile"
-    $btnInstall.IsEnabled = $true
-  }
-
-  $null = $btnInst.Add_Click({ On-Install })
-  $null = $btnClose.Add_Click({ $win.Close() })
-
-  $chkDry.IsChecked = [bool]$DryRun
-  $chkSil.IsChecked = [bool]$Silent
-
-  $null = $win.ShowDialog()
+  $btnClose.Add_Click({ $win.Close() })
+  $win.ShowDialog() | Out-Null
 }
 else {
   $selected = $allApps | Select-Object Name, Id, Profile | Out-GridView -Title "$($Script:ToolName) – vælg apps" -PassThru
-  if (-not $selected) { Write-Log "Ingen apps valgt. Stopper."; return }
   foreach ($app in $selected) {
-    if ($DryRun) { Write-Log "[DRY-RUN] winget install --id $($app.Id)"; continue }
-    Write-Log "Installerer: $($app.Name) ($($app.Id))..."
-    $code = Install-Winget -Id $app.Id -SilentInstall:$Silent
-    if ($code -eq 0) { Write-Log "OK: $($app.Name) installeret." } else { Write-Log "FEJL ($code): $($app.Name)" "ERROR" }
+    if ($DryRun) {
+      Write-Log "[DRY-RUN] winget install --id $($app.Id)"
+    } else {
+      Write-Log "Installerer: $($app.Name) ($($app.Id))..."
+      $code = Install-Winget -Id $app.Id -SilentInstall:$Silent
+      if ($code -eq 0) { Write-Log "OK: $($app.Name) installeret." } else { Write-Log "FEJL ($app.Name)" "ERROR" }
+    }
   }
-  Write-Log "Færdig."
 }
