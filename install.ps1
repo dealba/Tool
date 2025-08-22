@@ -158,15 +158,22 @@ if ($chosenTweaks.Count -gt 0) {
 # ---------- Install apps ----------
 function Invoke-WingetInstall {
   param([string]$Id)
-  $args = @('install','--exact','--id', $Id,'--accept-package-agreements','--accept-source-agreements')
+  $args = @(
+    'install','--exact','--id', $Id,
+    '--accept-package-agreements','--accept-source-agreements'
+  )
   if ($Silent) { $args += '--silent' }
-  if ($DryRun) {
-    Write-Log ("[DRY-RUN] winget {0}" -f ($args -join ' '))
-    return 0
-  }
+  # valgfrit: undgå popups
+  $args += '--disable-interactivity'
+
+  $argLine = ($args -join ' ')
+  Write-Log ("CMD: winget " + $argLine)
+
+  if ($DryRun) { return 0 }
+
   try {
-    & winget @args
-    return $LASTEXITCODE
+    $p = Start-Process -FilePath 'winget' -ArgumentList $args -NoNewWindow -Wait -PassThru
+    return [int]$p.ExitCode
   } catch {
     Write-Log ("winget failed for {0}: {1}" -f $Id, $_.Exception.Message) "ERROR"
     return 1
