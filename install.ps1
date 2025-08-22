@@ -194,10 +194,12 @@ if ($UseWpf) {
   $btnInst  = $win.FindName('btnInstall')
   $btnClose = $win.FindName('btnClose')
 
+  # Data binding
   $collection = New-Object System.Collections.ObjectModel.ObservableCollection[object]
   $allApps | ForEach-Object { $collection.Add($_) }
   $lvApps.ItemsSource = $collection
 
+  # Tweaks checkboxes
   $tweakBoxes = @{}
   foreach ($t in $allTweaks) {
     $cb = New-Object System.Windows.Controls.CheckBox
@@ -208,29 +210,31 @@ if ($UseWpf) {
     $tweakBoxes[$t.Key] = $cb
   }
 
-  $txtSearch.Add_TextChanged({
+  function Update-Filter {
     $q = $txtSearch.Text.Trim()
-    $lvApps.Items.Filter = { param($item)
-      if ([string]::IsNullOrWhiteSpace($q)) { return $true }
-      $item.Name -like "*$q*" -or $item.Id -like "*$q*" -or $item.Profile -like "*$q*"
+    $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($lvApps.ItemsSource)
+    if ([string]::IsNullOrWhiteSpace($q)) {
+      $view.Filter = $null
+    } else {
+      $view.Filter = { param($item) ($item.Name -like "*$q*") -or ($item.Id -like "*$q*") -or ($item.Profile -like "*$q*") }
     }
-  })
+    $view.Refresh()
+  }
 
-  $btnInst.Add_Click({
+  $null = $txtSearch.Add_TextChanged({ Update-Filter })
+
+  function On-Install {
     $sel = @($lvApps.SelectedItems)
     $selectedTweaks = @()
     foreach ($kv in $tweakBoxes.GetEnumerator()) {
       if ($kv.Value.IsChecked) { $selectedTweaks += $kv.Key }
     }
-
     if ($sel.Count -eq 0 -and $selectedTweaks.Count -eq 0) {
       [System.Windows.MessageBox]::Show("Vælg mindst én app eller tweak.","$($Script:ToolName)")
       return
     }
-
     $lblStat.Text = "Arbejder... se log: $Script:LogFile"
-    $btnInst.IsEnabled = $false
-
+    $btnInstall = $btnInst; $btnInstall.IsEnabled = $false
     $isDry = $chkDry.IsChecked
     $isSilent = $chkSil.IsChecked
 
@@ -258,10 +262,11 @@ if ($UseWpf) {
     }
 
     $lblStat.Text = "Færdig. Log: $Script:LogFile"
-    $btnInst.IsEnabled = $true
-  })
+    $btnInstall.IsEnabled = $true
+  }
 
-  $btnClose.Add_Click({ $win.Close() })
+  $null = $btnInst.Add_Click({ On-Install })
+  $null = $btnClose.Add_Click({ $win.Close() })
 
   $chkDry.IsChecked = [bool]$DryRun
   $chkSil.IsChecked = [bool]$Silent
@@ -271,7 +276,6 @@ if ($UseWpf) {
 else {
   $selected = $allApps | Select-Object Name, Id, Profile | Out-GridView -Title "$($Script:ToolName) – vælg apps" -PassThru
   if (-not $selected) { Write-Log "Ingen apps valgt. Stopper."; return }
-
   foreach ($app in $selected) {
     if ($DryRun) { Write-Log "[DRY-RUN] winget install --id $($app.Id)"; continue }
     Write-Log "Installerer: $($app.Name) ($($app.Id))..."
