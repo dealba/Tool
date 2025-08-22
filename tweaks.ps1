@@ -3,8 +3,9 @@ param(
   [switch]$DryRun
 )
 
+
 function Do {
-  param([string]$Desc,[scriptblock]$Action)
+  param([string]$Desc, [scriptblock]$Action)
   if ($DryRun) { Write-Host "[DRY-RUN] $Desc"; return }
   Write-Host $Desc
   & $Action
@@ -13,7 +14,7 @@ function Do {
 foreach ($t in $Tweaks) {
   switch ($t) {
     'DisableBingInSearch' {
-      Do "Slår Bing/Web i Windows-søgning fra" {
+      Do "Slår Bing/Web i Windows-søgning fra" { 
         New-Item -Path "HKCU:\Software\Policies\Microsoft\Windows\Explorer" -Force | Out-Null
         Set-ItemProperty "HKCU:\Software\Policies\Microsoft\Windows\Explorer" DisableSearchBoxSuggestions 1 -Type DWord
       }

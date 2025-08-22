@@ -6,7 +6,7 @@
 
 param(
   [switch]$DryRun,
-  [switch]$Silent = $true,
+  [switch]$Silent,
   [string]$BaseUrl # valgfri. Hvis sat, hentes profiler/tweaks remote (fx GitHub raw)
 )
 
@@ -27,23 +27,23 @@ function Write-Log {
   Add-Content -LiteralPath $Script:LogFile -Value $line
 }
 
-function Ensure-Admin {
+function Test-Admin {
   $id = [Security.Principal.WindowsIdentity]::GetCurrent()
   $p  = [Security.Principal.WindowsPrincipal]$id
   if (-not $p.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
     Write-Host "Genstarter $($Script:ToolName) som administrator..."
-    $psi = New-Object System.Diagnostics.ProcessStartInfo "powershell"
-    $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`"")
-    if ($DryRun) { $args += '-DryRun' }
-    if ($Silent) { $args += '-Silent' }
-    if ($BaseUrl) { $args += @('-BaseUrl',"`"$BaseUrl`"") }
-    $psi.ArgumentList.AddRange($args)
+  $psi = New-Object System.Diagnostics.ProcessStartInfo "powershell"
+  $myArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`"")
+  if ($DryRun) { $myArgs += '-DryRun' }
+  if ($Silent) { $myArgs += '-Silent' }
+  if ($BaseUrl) { $myArgs += @('-BaseUrl',"`"$BaseUrl`"") }
+  $psi.ArgumentList.AddRange($myArgs)
     $psi.Verb = "runas"
     [Diagnostics.Process]::Start($psi) | Out-Null
     exit
   }
 }
-Ensure-Admin
+Test-Admin
 
 Write-Log "$($Script:ToolName) start. DryRun=$DryRun Silent=$Silent"
 
@@ -90,12 +90,12 @@ function Invoke-Tweaks {
 # ── Installationsfunktion ─────────────────────────────────────────────────────
 function Install-Winget {
   param([string]$Id, [switch]$SilentInstall)
-  $args = @("install","--exact","--id",$Id,"--accept-package-agreements","--accept-source-agreements")
-  if ($SilentInstall) { $args += "--silent" }
+  $myArgs = @("install","--exact","--id",$Id,"--accept-package-agreements","--accept-source-agreements")
+  if ($SilentInstall) { $myArgs += "--silent" }
 
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = "winget"
-  $psi.ArgumentList.AddRange($args)
+  $psi.ArgumentList.AddRange($myArgs)
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError  = $true
   $psi.UseShellExecute        = $false
