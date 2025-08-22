@@ -42,13 +42,15 @@ function Ensure-Admin {
 }
 Ensure-Admin
 
-Write-Log "$($Script:ToolName) start. DryRun=$DryRun Silent=$Silent"
+Write-Log -Message "$($Script:ToolName) start. DryRun=$DryRun Silent=$Silent"
 
+# Kræv winget
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-  Write-Log "winget ikke fundet. Installer 'App Installer' fra Microsoft Store." "ERROR"
+  Write-Log -Message "winget ikke fundet. Installer 'App Installer' fra Microsoft Store." -Level "ERROR"
   throw "winget mangler"
 }
 
+# Indlæs profiler lokalt eller remote
 function Get-ProfileJson {
   param([string]$Name)
   $local = Join-Path $ScriptRoot "profiles\apps-$Name.json"
@@ -56,7 +58,7 @@ function Get-ProfileJson {
     return Get-Content $local -Raw | ConvertFrom-Json
   } elseif ($BaseUrl) {
     $url = ($BaseUrl.TrimEnd('/')) + "/profiles/apps-$Name.json"
-    Write-Log "Henter profil: $url"
+    Write-Log -Message "Henter profil: $url"
     $txt = (Invoke-WebRequest -UseBasicParsing -Uri $url).Content
     return $txt | ConvertFrom-Json
   } else {
@@ -85,15 +87,20 @@ function Install-Winget {
   $stdout = $proc.StandardOutput.ReadToEnd()
   $stderr = $proc.StandardError.ReadToEnd()
   $proc.WaitForExit()
-  if ($stdout) { Write-Log $stdout.Trim() "OUT" }
-  if ($stderr) { Write-Log $stderr.Trim() "ERR" }
+  if ($stdout) { Write-Log -Message ($stdout.Trim()) -Level "OUT" }
+  if ($stderr) { Write-Log -Message ($stderr.Trim()) -Level "ERR" }
   return $proc.ExitCode
 }
 
+# Prøv at loade WPF (PowerShell 5.1)
+$UseWpf = $true
+try { Add-Type -AssemblyName PresentationFramework } catch { $UseWpf = $false }
+
+# Data
 $profiles = @('essentials','dev','gaming')
 $appsByProfile = @{}
 foreach ($p in $profiles) {
-  try { $appsByProfile[$p] = Get-ProfileJson -Name $p } catch { Write-Log $_ "ERROR" }
+  try { $appsByProfile[$p] = Get-ProfileJson -Name $p } catch { Write-Log -Message $_ -Level "ERROR" }
 }
 
 $allApps = @()
@@ -109,6 +116,7 @@ foreach ($p in $profiles) {
 }
 $allApps = $allApps | Sort-Object Id -Unique
 
+# Tweak-liste
 $allTweaks = @(
   @{ Key='DisableBingInSearch';   Label='Slå Bing-søgning i Start/Search fra' },
   @{ Key='ShowFileExtensions';    Label='Vis filendelser i Explorer' },
@@ -116,11 +124,8 @@ $allTweaks = @(
   @{ Key='DisableTelemetryBasic'; Label='Reducer basal telemetri' }
 )
 
-# Hvis WPF kan loades (PowerShell 5.1), så kør GUI, ellers Out-GridView fallback
-$UseWpf = $true
-try { Add-Type -AssemblyName PresentationFramework } catch { $UseWpf = $false }
-
 if ($UseWpf) {
+  # XAML GUI
   $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         Title="$($Script:ToolName)" Height="540" Width="820" WindowStartupLocation="CenterScreen">
@@ -152,10 +157,13 @@ if ($UseWpf) {
         </ListView>
       </GroupBox>
       <GroupBox Grid.Column="1" Header="Tweaks" Margin="10,0,0,0">
-        <StackPanel x:Name="spTweaks"/>
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel x:Name="spTweaks" Margin="6"/>
+        </ScrollViewer>
       </GroupBox>
     </Grid>
     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+      <TextBlock x:Name="lblStatus" VerticalAlignment="Center" Margin="0,0,10,0"/>
       <Button x:Name="btnInstall" Content="Installér valgte" Width="140" Height="30" Margin="0,0,6,0"/>
       <Button x:Name="btnClose" Content="Luk" Width="90" Height="30"/>
     </StackPanel>
@@ -170,59 +178,80 @@ if ($UseWpf) {
   $spTweaks = $win.FindName('spTweaks')
   $chkDry   = $win.FindName('chkDryRun')
   $chkSil   = $win.FindName('chkSilent')
+  $lblStat  = $win.FindName('lblStatus')
   $btnInst  = $win.FindName('btnInstall')
   $btnClose = $win.FindName('btnClose')
 
+  # Fyld app-listen
   $collection = New-Object System.Collections.ObjectModel.ObservableCollection[object]
   $allApps | ForEach-Object { $collection.Add($_) }
   $lvApps.ItemsSource = $collection
 
+  # Tweaks checkboxes
   $tweakBoxes = @{}
   foreach ($t in $allTweaks) {
     $cb = New-Object System.Windows.Controls.CheckBox
     $cb.Content = $t.Label
     $cb.Tag     = $t.Key
+    $cb.Margin  = '4'
     $spTweaks.Children.Add($cb) | Out-Null
     $tweakBoxes[$t.Key] = $cb
   }
 
+  # Klik-håndterere
   $btnInst.Add_Click({
     $sel = @($lvApps.SelectedItems)
-    $selectedTweaks = $tweakBoxes.Keys | Where-Object { $tweakBoxes[$_].IsChecked }
+    $selectedTweaks = @()
+    foreach ($kv in $tweakBoxes.GetEnumerator()) {
+      if ($kv.Value.IsChecked) { $selectedTweaks += $kv.Key }
+    }
 
     if ($sel.Count -eq 0 -and $selectedTweaks.Count -eq 0) {
       [System.Windows.MessageBox]::Show("Vælg mindst én app eller tweak.","$($Script:ToolName)")
       return
     }
 
-    if ($selectedTweaks) {
-      Write-Log "Tweaks valgt: $($selectedTweaks -join ', ')"
+    $lblStatus.Text = "Arbejder... se log."
+    if ($selectedTweaks.Count -gt 0) {
+      Write-Log -Message ("Tweaks valgt: " + ($selectedTweaks -join ', '))
       Invoke-Tweaks -SelectedTweaks $selectedTweaks
     }
 
     foreach ($app in $sel) {
-      if ($DryRun -or $chkDry.IsChecked) {
-        Write-Log "[DRY-RUN] winget install --id $($app.Id)"
+      if ($chkDry.IsChecked -or $DryRun) {
+        Write-Log -Message ("[DRY-RUN] winget install --id {0}" -f $app.Id)
       } else {
-        Write-Log "Installerer: $($app.Name) ($($app.Id))..."
+        Write-Log -Message ("Installerer: {0} ({1})..." -f $app.Name, $app.Id)
         $code = Install-Winget -Id $app.Id -SilentInstall:($chkSil.IsChecked)
-        if ($code -eq 0) { Write-Log "OK: $($app.Name) installeret." } else { Write-Log "FEJL ($app.Name)" "ERROR" }
+        if ($code -eq 0) {
+          Write-Log -Message ("OK: {0} installeret." -f $app.Name)
+        } else {
+          Write-Log -Message ("FEJL: {0} kunne ikke installeres." -f $app.Name) -Level "ERROR"
+        }
       }
     }
+
+    $lblStatus.Text = "Færdig."
   })
 
   $btnClose.Add_Click({ $win.Close() })
-  $win.ShowDialog() | Out-Null
+  $null = $win.ShowDialog()
 }
 else {
+  # Fallback uden WPF
   $selected = $allApps | Select-Object Name, Id, Profile | Out-GridView -Title "$($Script:ToolName) – vælg apps" -PassThru
+  if (-not $selected) { Write-Log -Message "Ingen apps valgt. Stopper."; return }
   foreach ($app in $selected) {
     if ($DryRun) {
-      Write-Log "[DRY-RUN] winget install --id $($app.Id)"
+      Write-Log -Message ("[DRY-RUN] winget install --id {0}" -f $app.Id)
     } else {
-      Write-Log "Installerer: $($app.Name) ($($app.Id))..."
+      Write-Log -Message ("Installerer: {0} ({1})..." -f $app.Name, $app.Id)
       $code = Install-Winget -Id $app.Id -SilentInstall:$Silent
-      if ($code -eq 0) { Write-Log "OK: $($app.Name) installeret." } else { Write-Log "FEJL ($app.Name)" "ERROR" }
+      if ($code -eq 0) {
+        Write-Log -Message ("OK: {0} installeret." -f $app.Name)
+      } else {
+        Write-Log -Message ("FEJL: {0} kunne ikke installeres." -f $app.Name) -Level "ERROR"
+      }
     }
   }
 }
