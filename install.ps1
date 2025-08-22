@@ -1,257 +1,194 @@
-<#
-  H4N53N Tool – Windows Utility (WPF) med profiler og tweaks.
+<# 
+ H4N53N Tool - Console edition (winget + tweaks)
+ - Works in PowerShell 5.1 and 7.x
+ - No WPF, no Unicode punctuation (safe encoding)
+ - Uses profiles\apps-*.json and tweaks.ps1 in same folder
 #>
 
 param(
   [switch]$DryRun,
-  [switch]$Silent = $true,
-  [string]$BaseUrl
+  [switch]$Silent = $true
 )
 
 $ErrorActionPreference = 'Stop'
-$Script:ToolName = 'H4N53N Tool'
-$ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$ToolName   = 'H4N53N Tool'
+$Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$LogDir     = Join-Path $env:ProgramData 'H4N53N-Tool\Logs'
+$LogFile    = Join-Path $LogDir ("install_{0:yyyy-MM-dd_HH-mm-ss}.log" -f (Get-Date))
 
+# ---------- Logging ----------
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 function Write-Log {
-  param([string]$Message, [string]$Level = "INFO")
-  if (-not $Script:LogFile) {
-    $logDir = Join-Path $env:ProgramData 'H4N53N-Tool\Logs'
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-    $Script:LogFile = Join-Path $logDir ("install_{0:yyyy-MM-dd_HH-mm-ss}.log" -f (Get-Date))
-  }
+  param([string]$Message, [string]$Level = 'INFO')
   $line = "[{0:yyyy-MM-dd HH:mm:ss}] [{1}] {2}" -f (Get-Date), $Level, $Message
   Write-Host $line
-  Add-Content -LiteralPath $Script:LogFile -Value $line
+  Add-Content -LiteralPath $LogFile -Value $line
 }
 
-function Ensure-Admin {
+# ---------- Admin elevation ----------
+function Test-IsAdmin {
   $id = [Security.Principal.WindowsIdentity]::GetCurrent()
   $p  = [Security.Principal.WindowsPrincipal]$id
-  if (-not $p.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
-    Write-Host "Genstarter $($Script:ToolName) som administrator..."
-    $psi = New-Object System.Diagnostics.ProcessStartInfo "powershell"
-    $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`"")
-    if ($DryRun) { $args += '-DryRun' }
-    if ($Silent) { $args += '-Silent' }
-    if ($BaseUrl) { $args += @('-BaseUrl',"`"$BaseUrl`"") }
-    foreach ($a in $args) { $null = $psi.ArgumentList.Add($a) }
-    $psi.Verb = "runas"
-    [Diagnostics.Process]::Start($psi) | Out-Null
-    exit
-  }
+  return $p.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 }
-Ensure-Admin
+if (-not (Test-IsAdmin)) {
+  Write-Host "Restarting $ToolName as Administrator..."
+  $argList = @("-NoProfile","-ExecutionPolicy","Bypass","-File","`"$PSCommandPath`"")
+  if ($DryRun) { $argList += "-DryRun" }
+  if ($Silent) { $argList += "-Silent" }
+  Start-Process -FilePath "powershell" -ArgumentList $argList -Verb RunAs | Out-Null
+  exit
+}
 
-Write-Log -Message "$($Script:ToolName) start. DryRun=$DryRun Silent=$Silent"
-
-# Kræv winget
+Write-Log "Start. DryRun=$DryRun Silent=$Silent"
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-  Write-Log -Message "winget ikke fundet. Installer 'App Installer' fra Microsoft Store." -Level "ERROR"
-  throw "winget mangler"
+  Write-Log "winget not found. Install 'App Installer' from Microsoft Store." "ERROR"
+  throw "winget missing"
 }
 
-# Indlæs profiler lokalt eller remote
-function Get-ProfileJson {
-  param([string]$Name)
-  $local = Join-Path $ScriptRoot "profiles\apps-$Name.json"
-  if (Test-Path $local) {
-    return Get-Content $local -Raw | ConvertFrom-Json
-  } elseif ($BaseUrl) {
-    $url = ($BaseUrl.TrimEnd('/')) + "/profiles/apps-$Name.json"
-    Write-Log -Message "Henter profil: $url"
-    $txt = (Invoke-WebRequest -UseBasicParsing -Uri $url).Content
-    return $txt | ConvertFrom-Json
-  } else {
-    throw "Profil '$Name' ikke fundet lokalt og BaseUrl er ikke sat."
-  }
-}
+# ---------- Load profiles ----------
+$profiles = @('essentials','dev','gaming')  # extend as needed
+$apps = New-Object System.Collections.Generic.List[object]
 
-function Invoke-Tweaks {
-  param([string[]]$SelectedTweaks)
-  if (-not $SelectedTweaks -or $SelectedTweaks.Count -eq 0) { return }
-  $tw = Join-Path $ScriptRoot 'tweaks.ps1'
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $tw -Tweaks $SelectedTweaks -DryRun:$DryRun
-}
-
-function Install-Winget {
-  param([string]$Id, [switch]$SilentInstall)
-  $args = @("install","--exact","--id",$Id,"--accept-package-agreements","--accept-source-agreements")
-  if ($SilentInstall) { $args += "--silent" }
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = "winget"
-  foreach ($a in $args) { $null = $psi.ArgumentList.Add($a) }
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError  = $true
-  $psi.UseShellExecute        = $false
-  $proc = [System.Diagnostics.Process]::Start($psi)
-  $stdout = $proc.StandardOutput.ReadToEnd()
-  $stderr = $proc.StandardError.ReadToEnd()
-  $proc.WaitForExit()
-  if ($stdout) { Write-Log -Message ($stdout.Trim()) -Level "OUT" }
-  if ($stderr) { Write-Log -Message ($stderr.Trim()) -Level "ERR" }
-  return $proc.ExitCode
-}
-
-# Prøv at loade WPF (PowerShell 5.1)
-$UseWpf = $true
-try { Add-Type -AssemblyName PresentationFramework } catch { $UseWpf = $false }
-
-# Data
-$profiles = @('essentials','dev','gaming')
-$appsByProfile = @{}
 foreach ($p in $profiles) {
-  try { $appsByProfile[$p] = Get-ProfileJson -Name $p } catch { Write-Log -Message $_ -Level "ERROR" }
-}
-
-$allApps = @()
-foreach ($p in $profiles) {
-  foreach ($a in ($appsByProfile[$p] | ForEach-Object { $_ })) {
-    $allApps += [pscustomobject]@{
-      Profile = $p
-      Name    = $a.name
-      Id      = $a.id
-      Source  = if ($a.source) { $a.source } else { 'winget' }
+  $path = Join-Path $Root ("profiles\apps-{0}.json" -f $p)
+  if (Test-Path $path) {
+    try {
+      $json = Get-Content $path -Raw | ConvertFrom-Json
+      foreach ($a in $json) {
+        $apps.Add([pscustomobject]@{
+          Profile = $p
+          Name    = $a.name
+          Id      = $a.id
+          Source  = if ($a.PSObject.Properties.Name -contains 'source' -and $a.source) { $a.source } else { 'winget' }
+        })
+      }
+    } catch {
+      Write-Log "Failed to parse $path : $($_.Exception.Message)" "ERROR"
     }
+  } else {
+    Write-Log "Profile file missing: $path" "WARN"
   }
 }
-$allApps = $allApps | Sort-Object Id -Unique
 
-# Tweak-liste
-$allTweaks = @(
-  @{ Key='DisableBingInSearch';   Label='Slå Bing-søgning i Start/Search fra' },
-  @{ Key='ShowFileExtensions';    Label='Vis filendelser i Explorer' },
-  @{ Key='TaskbarSmallIcons';     Label='Små ikoner på taskbar' },
-  @{ Key='DisableTelemetryBasic'; Label='Reducer basal telemetri' }
+# Deduplicate by Id
+$apps = $apps | Sort-Object Id -Unique
+if ($apps.Count -eq 0) {
+  Write-Log "No apps found in profiles folder." "ERROR"
+  throw "No apps"
+}
+
+# ---------- Choose profiles ----------
+Write-Host ""
+Write-Host "Available profiles:"
+for ($i=0; $i -lt $profiles.Count; $i++) {
+  Write-Host ("  [{0}] {1}" -f ($i+1), $profiles[$i])
+}
+$profSel = Read-Host "Select profiles by number (comma separated) or 'all' (ENTER = all)"
+if ([string]::IsNullOrWhiteSpace($profSel) -or $profSel -eq 'all') {
+  $chosenProfiles = $profiles
+} else {
+  $idxs = $profSel -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }
+  $chosenProfiles = foreach ($j in $idxs) { if ($j -ge 1 -and $j -le $profiles.Count) { $profiles[$j-1] } }
+  if (-not $chosenProfiles -or $chosenProfiles.Count -eq 0) { $chosenProfiles = $profiles }
+}
+
+# Filter apps by chosen profiles
+$appsFiltered = $apps | Where-Object { $chosenProfiles -contains $_.Profile }
+
+# ---------- Choose apps ----------
+Write-Host ""
+Write-Host "Apps in selected profiles:"
+for ($i=0; $i -lt $appsFiltered.Count; $i++) {
+  $a = $appsFiltered[$i]
+  Write-Host ("  [{0}] {1}  ({2})  [{3}]" -f ($i+1), $a.Name, $a.Id, $a.Profile)
+}
+$appSel = Read-Host "Select apps by number (comma separated) or 'all' (ENTER = all)"
+if ([string]::IsNullOrWhiteSpace($appSel) -or $appSel -eq 'all') {
+  $chosenApps = $appsFiltered
+} else {
+  $idxs = $appSel -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }
+  $chosenApps = foreach ($j in $idxs) { if ($j -ge 1 -and $j -le $appsFiltered.Count) { $appsFiltered[$j-1] } }
+}
+
+if (-not $chosenApps -or $chosenApps.Count -eq 0) {
+  Write-Log "No apps selected. Exiting."
+  return
+}
+
+# ---------- Tweaks ----------
+$tweaksCatalog = @(
+  @{ Key='DisableBingInSearch';   Label='Disable Bing in Start/Search' },
+  @{ Key='ShowFileExtensions';    Label='Show file extensions in Explorer' },
+  @{ Key='TaskbarSmallIcons';     Label='Small taskbar icons' },
+  @{ Key='DisableTelemetryBasic'; Label='Reduce basic telemetry' }
 )
 
-if ($UseWpf) {
-  # XAML GUI
-  $xaml = @"
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        Title="$($Script:ToolName)" Height="540" Width="820" WindowStartupLocation="CenterScreen">
-  <Grid Margin="10">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-      <TextBlock Text="$($Script:ToolName)" FontSize="20" FontWeight="Bold" Margin="0,0,12,0"/>
-      <CheckBox x:Name="chkDryRun" Content="Dry-Run" Margin="20,0,0,0"/>
-      <CheckBox x:Name="chkSilent" Content="Silent install" Margin="12,0,0,0" IsChecked="True"/>
-    </StackPanel>
-    <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="2*"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-      <GroupBox Header="Apps">
-        <ListView x:Name="lvApps" SelectionMode="Extended">
-          <ListView.View>
-            <GridView>
-              <GridViewColumn Header="Navn" DisplayMemberBinding="{Binding Name}" Width="230"/>
-              <GridViewColumn Header="Id"   DisplayMemberBinding="{Binding Id}"   Width="240"/>
-              <GridViewColumn Header="Profil" DisplayMemberBinding="{Binding Profile}" Width="90"/>
-            </GridView>
-          </ListView.View>
-        </ListView>
-      </GroupBox>
-      <GroupBox Grid.Column="1" Header="Tweaks" Margin="10,0,0,0">
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-          <StackPanel x:Name="spTweaks" Margin="6"/>
-        </ScrollViewer>
-      </GroupBox>
-    </Grid>
-    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
-      <TextBlock x:Name="lblStatus" VerticalAlignment="Center" Margin="0,0,10,0"/>
-      <Button x:Name="btnInstall" Content="Installér valgte" Width="140" Height="30" Margin="0,0,6,0"/>
-      <Button x:Name="btnClose" Content="Luk" Width="90" Height="30"/>
-    </StackPanel>
-  </Grid>
-</Window>
-"@
-
-  $reader = (New-Object System.Xml.XmlNodeReader ([xml]$xaml))
-  $win = [Windows.Markup.XamlReader]::Load($reader)
-
-  $lvApps   = $win.FindName('lvApps')
-  $spTweaks = $win.FindName('spTweaks')
-  $chkDry   = $win.FindName('chkDryRun')
-  $chkSil   = $win.FindName('chkSilent')
-  $lblStat  = $win.FindName('lblStatus')
-  $btnInst  = $win.FindName('btnInstall')
-  $btnClose = $win.FindName('btnClose')
-
-  # Fyld app-listen
-  $collection = New-Object System.Collections.ObjectModel.ObservableCollection[object]
-  $allApps | ForEach-Object { $collection.Add($_) }
-  $lvApps.ItemsSource = $collection
-
-  # Tweaks checkboxes
-  $tweakBoxes = @{}
-  foreach ($t in $allTweaks) {
-    $cb = New-Object System.Windows.Controls.CheckBox
-    $cb.Content = $t.Label
-    $cb.Tag     = $t.Key
-    $cb.Margin  = '4'
-    $spTweaks.Children.Add($cb) | Out-Null
-    $tweakBoxes[$t.Key] = $cb
-  }
-
-  # Klik-håndterere
-  $btnInst.Add_Click({
-    $sel = @($lvApps.SelectedItems)
-    $selectedTweaks = @()
-    foreach ($kv in $tweakBoxes.GetEnumerator()) {
-      if ($kv.Value.IsChecked) { $selectedTweaks += $kv.Key }
-    }
-
-    if ($sel.Count -eq 0 -and $selectedTweaks.Count -eq 0) {
-      [System.Windows.MessageBox]::Show("Vælg mindst én app eller tweak.","$($Script:ToolName)")
-      return
-    }
-
-    $lblStatus.Text = "Arbejder... se log."
-    if ($selectedTweaks.Count -gt 0) {
-      Write-Log -Message ("Tweaks valgt: " + ($selectedTweaks -join ', '))
-      Invoke-Tweaks -SelectedTweaks $selectedTweaks
-    }
-
-    foreach ($app in $sel) {
-      if ($chkDry.IsChecked -or $DryRun) {
-        Write-Log -Message ("[DRY-RUN] winget install --id {0}" -f $app.Id)
-      } else {
-        Write-Log -Message ("Installerer: {0} ({1})..." -f $app.Name, $app.Id)
-        $code = Install-Winget -Id $app.Id -SilentInstall:($chkSil.IsChecked)
-        if ($code -eq 0) {
-          Write-Log -Message ("OK: {0} installeret." -f $app.Name)
-        } else {
-          Write-Log -Message ("FEJL: {0} kunne ikke installeres." -f $app.Name) -Level "ERROR"
-        }
-      }
-    }
-
-    $lblStatus.Text = "Færdig."
-  })
-
-  $btnClose.Add_Click({ $win.Close() })
-  $null = $win.ShowDialog()
+Write-Host ""
+Write-Host "Tweaks:"
+for ($i=0; $i -lt $tweaksCatalog.Count; $i++) {
+  Write-Host ("  [{0}] {1}" -f ($i+1), $tweaksCatalog[$i].Label)
 }
-else {
-  # Fallback uden WPF
-  $selected = $allApps | Select-Object Name, Id, Profile | Out-GridView -Title "$($Script:ToolName) – vælg apps" -PassThru
-  if (-not $selected) { Write-Log -Message "Ingen apps valgt. Stopper."; return }
-  foreach ($app in $selected) {
+$tweakSel = Read-Host "Select tweaks (comma separated), or ENTER for none"
+$chosenTweaks = @()
+if (-not [string]::IsNullOrWhiteSpace($tweakSel)) {
+  $idxs = $tweakSel -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }
+  foreach ($j in $idxs) {
+    if ($j -ge 1 -and $j -le $tweaksCatalog.Count) {
+      $chosenTweaks += $tweaksCatalog[$j-1].Key
+    }
+  }
+}
+
+# ---------- Run tweaks ----------
+if ($chosenTweaks.Count -gt 0) {
+  $tw = Join-Path $Root 'tweaks.ps1'
+  if (Test-Path $tw) {
     if ($DryRun) {
-      Write-Log -Message ("[DRY-RUN] winget install --id {0}" -f $app.Id)
+      Write-Log ("[DRY-RUN] Would run tweaks: {0}" -f ($chosenTweaks -join ', '))
     } else {
-      Write-Log -Message ("Installerer: {0} ({1})..." -f $app.Name, $app.Id)
-      $code = Install-Winget -Id $app.Id -SilentInstall:$Silent
-      if ($code -eq 0) {
-        Write-Log -Message ("OK: {0} installeret." -f $app.Name)
-      } else {
-        Write-Log -Message ("FEJL: {0} kunne ikke installeres." -f $app.Name) -Level "ERROR"
-      }
+      Write-Log ("Running tweaks: {0}" -f ($chosenTweaks -join ', '))
+      & powershell -NoProfile -ExecutionPolicy Bypass -File $tw -Tweaks $chosenTweaks -DryRun:$DryRun
     }
+  } else {
+    Write-Log "tweaks.ps1 not found next to install.ps1" "WARN"
   }
 }
+
+# ---------- Install apps ----------
+function Invoke-WingetInstall {
+  param([string]$Id)
+  $args = @('install','--exact','--id', $Id,'--accept-package-agreements','--accept-source-agreements')
+  if ($Silent) { $args += '--silent' }
+  if ($DryRun) {
+    Write-Log ("[DRY-RUN] winget {0}" -f ($args -join ' '))
+    return 0
+  }
+  try {
+    & winget @args
+    return $LASTEXITCODE
+  } catch {
+    Write-Log ("winget failed for {0}: {1}" -f $Id, $_.Exception.Message) "ERROR"
+    return 1
+  }
+}
+
+Write-Host ""
+Write-Log ("Installing {0} app(s)..." -f $chosenApps.Count)
+foreach ($app in $chosenApps) {
+  if ($app.Source -ne 'winget') {
+    Write-Log ("Unknown source '{0}' for {1} - skipping." -f $app.Source, $app.Name) "WARN"
+    continue
+  }
+  Write-Log ("Installing: {0} ({1})" -f $app.Name, $app.Id)
+  $code = Invoke-WingetInstall -Id $app.Id
+  if ($code -eq 0) {
+    Write-Log ("OK: {0} installed." -f $app.Name)
+  } else {
+    Write-Log ("ERROR: {0} failed with code {1}." -f $app.Name, $code) "ERROR"
+  }
+}
+
+Write-Log "Done."
+Write-Host ""
+Write-Host ("Log file: {0}" -f $LogFile)
